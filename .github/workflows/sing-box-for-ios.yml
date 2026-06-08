@@ -46,7 +46,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: macos-26
 
     steps:
       - name: Checkout this repo
@@ -62,7 +62,6 @@ jobs:
           sudo xcode-select -s /Applications/Xcode.app
           xcodebuild -version >> $GITHUB_STEP_SUMMARY
 
-
       - name: Install ldid (via brew)
         run: |
           brew install ldid
@@ -70,7 +69,7 @@ jobs:
       - name: Build TIPA
         if: ${{ inputs.run_build == 'true' }}
         run: |
-          set -ex
+          set -euo pipefail
 
           cd $HOME
 
@@ -99,35 +98,38 @@ jobs:
             -project $XCODEPROJ_NAME.xcodeproj \
             -scheme $SCHEME_NAME \
             -destination 'generic/platform=iOS' \
-            -configuration Debug \
+            -configuration Release \
             -sdk iphoneos \
-            build install \
+            -derivedDataPath DerivedData \
+            build \
             STRIP_INSTALLED_PRODUCT=NO \
             ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=YES \
             CODE_SIGNING_ALLOWED=NO \
-            ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=NO \
-            ENABLE_BITCODE=NO \
-            DSTROOT=packages/
+            CODE_SIGNING_REQUIRED=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            SWIFT_SERIALIZE_DEBUGGING_OPTIONS=NO
 
-          ldid -SSFI/SFI.entitlements packages/Applications/$APPLICATION_NAME.app/$APPLICATION_NAME
-          ldid -SExtension/Extension.entitlements packages/Applications/$APPLICATION_NAME.app/PlugIns/Extension.appex/Extension
-          ldid -SIntentsExtension/IntentsExtension.entitlements packages/Applications/$APPLICATION_NAME.app/Extensions/IntentsExtension.appex/IntentsExtension
+          APP_PATH="DerivedData/Build/Products/Release-iphoneos/$APPLICATION_NAME.app"
+          ldid -SSFI/SFI.entitlements "$APP_PATH/$APPLICATION_NAME"
+          ldid -SExtension/Extension.entitlements "$APP_PATH/PlugIns/Extension.appex/Extension"
+          ldid -SIntentsExtension/IntentsExtension.entitlements "$APP_PATH/Extensions/IntentsExtension.appex/IntentsExtension"
 
           mkdir -p packages/Payload
-          cp -rp packages/Applications/$APPLICATION_NAME.app packages/Payload
+          cp -rp "$APP_PATH" packages/Payload
           cd packages
           zip -qr $APPLICATION_NAME.tipa Payload
           mv $APPLICATION_NAME.tipa ${GITHUB_WORKSPACE}/${APPLICATION_NAME}-${{ inputs.tag_name }}.tipa
           cd ${GITHUB_WORKSPACE}
           echo -e "SHA256 Checksum: \n$(sha256sum ${APPLICATION_NAME}-${{ inputs.tag_name }}.tipa)" >> $GITHUB_STEP_SUMMARY
 
-          rm -rf ~/Library/Developer/Xcode/DerivedData
+          rm -rf DerivedData
           rm -rf ~/sing-box
 
       - name: Build TIPA reF1nd
         if: ${{ inputs.run_build_reF1nd == 'true' }}
         run: |
-          set -ex
+          set -euo pipefail
 
           cd $HOME
 
@@ -156,31 +158,34 @@ jobs:
             -project $XCODEPROJ_NAME.xcodeproj \
             -scheme $SCHEME_NAME \
             -destination 'generic/platform=iOS' \
-            -configuration Debug \
+            -configuration Release \
             -sdk iphoneos \
-            build install \
-            INFOPLIST_KEY_CFBundleDisplayName="${APPLICATION_NAME}-reF1nd" \
-            PRODUCT_BUNDLE_IDENTIFIER="io.nekohasekai.sfavt-reF1nd" \
+            -derivedDataPath DerivedData \
+            build \
             STRIP_INSTALLED_PRODUCT=NO \
             ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=YES \
             CODE_SIGNING_ALLOWED=NO \
-            ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=NO \
-            ENABLE_BITCODE=NO \
-            DSTROOT=packages/
+            CODE_SIGNING_REQUIRED=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            SWIFT_SERIALIZE_DEBUGGING_OPTIONS=NO \
+            INFOPLIST_KEY_CFBundleDisplayName="${APPLICATION_NAME}-reF1nd" \
+            PRODUCT_BUNDLE_IDENTIFIER="io.nekohasekai.sfavt-reF1nd"
 
-          ldid -SSFI/SFI.entitlements packages/Applications/$APPLICATION_NAME.app/$APPLICATION_NAME
-          ldid -SExtension/Extension.entitlements packages/Applications/$APPLICATION_NAME.app/PlugIns/Extension.appex/Extension
-          ldid -SIntentsExtension/IntentsExtension.entitlements packages/Applications/$APPLICATION_NAME.app/Extensions/IntentsExtension.appex/IntentsExtension
+          APP_PATH="DerivedData/Build/Products/Release-iphoneos/$APPLICATION_NAME.app"
+          ldid -SSFI/SFI.entitlements "$APP_PATH/$APPLICATION_NAME"
+          ldid -SExtension/Extension.entitlements "$APP_PATH/PlugIns/Extension.appex/Extension"
+          ldid -SIntentsExtension/IntentsExtension.entitlements "$APP_PATH/Extensions/IntentsExtension.appex/IntentsExtension"
 
           mkdir -p packages/Payload
-          cp -rp packages/Applications/$APPLICATION_NAME.app packages/Payload
+          cp -rp "$APP_PATH" packages/Payload
           cd packages
           zip -qr $APPLICATION_NAME.tipa Payload
           mv $APPLICATION_NAME.tipa ${GITHUB_WORKSPACE}/${APPLICATION_NAME}-reF1nd-${{ inputs.tag_name }}.tipa
           cd ${GITHUB_WORKSPACE}
           echo -e "SHA256 Checksum: \n$(sha256sum ${APPLICATION_NAME}-reF1nd-${{ inputs.tag_name }}.tipa)" >> $GITHUB_STEP_SUMMARY
 
-          rm -rf ~/Library/Developer/Xcode/DerivedData
+          rm -rf DerivedData
           rm -rf ~/sing-box
 
       - name: Create Release and Upload TIPA
