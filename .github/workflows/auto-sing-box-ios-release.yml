@@ -1,0 +1,167 @@
+name: Auto build latest sing-box iOS release
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 09:00 Asia/Shanghai (UTC+8)
+    - cron: '0 1 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: auto-sing-box-ios-release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check_release.outputs.should_build }}
+      version: ${{ steps.check_release.outputs.version }}
+      tag_name: ${{ steps.check_release.outputs.tag_name }}
+      prerelease: ${{ steps.check_release.outputs.prerelease }}
+      upstream_url: ${{ steps.check_release.outputs.upstream_url }}
+    steps:
+      - name: Check latest upstream release
+        id: check_release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          upstream_json="$(curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/SagerNet/sing-box/releases?per_page=1")"
+
+          tag_name="$(perl -0ne 'if (/"tag_name"\s*:\s*"([^"]+)"/) { print $1 }' <<< "${upstream_json}")"
+          prerelease="$(perl -0ne 'if (/"prerelease"\s*:\s*(true|false)/) { print $1 }' <<< "${upstream_json}")"
+          upstream_url="$(perl -0ne 'if (/"html_url"\s*:\s*"([^"]+)"/) { print $1 }' <<< "${upstream_json}")"
+
+          if [ -z "${tag_name}" ]; then
+            echo "Failed to resolve latest upstream release tag." >&2
+            exit 1
+          fi
+
+          version="${tag_name#v}"
+          release_status="$(curl -sS -o /dev/null -w "%{http_code}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPOSITORY}/releases/tags/${tag_name}")"
+
+          if [ "${release_status}" = "200" ]; then
+            should_build=false
+            echo "${tag_name} already exists in ${REPOSITORY}; skipping build." >> "${GITHUB_STEP_SUMMARY}"
+          elif [ "${release_status}" = "404" ]; then
+            should_build=true
+            echo "New upstream release detected: ${tag_name}" >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "Unexpected release lookup status: ${release_status}" >&2
+            exit 1
+          fi
+
+          {
+            echo "should_build=${should_build}"
+            echo "version=${version}"
+            echo "tag_name=${tag_name}"
+            echo "prerelease=${prerelease}"
+            echo "upstream_url=${upstream_url}"
+          } >> "${GITHUB_OUTPUT}"
+
+  build:
+    needs: check
+    if: ${{ needs.check.outputs.should_build == 'true' }}
+    runs-on: macos-26
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ^1.25
+
+      - name: Setup Xcode stable
+        run: |-
+          sudo xcode-select -s /Applications/Xcode.app
+          xcodebuild -version >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Install ldid
+        run: brew install ldid
+
+      - name: Build TIPA
+        env:
+          SING_VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          cd "${HOME}"
+
+          echo "sing-box-v${SING_VERSION}" >> "${GITHUB_STEP_SUMMARY}"
+          git clone -b "v${SING_VERSION}" --recurse-submodules --depth 1 https://github.com/SagerNet/sing-box.git
+
+          export XCODEPROJ_NAME=sing-box
+          export APPLICATION_NAME=sing-box
+          export SCHEME_NAME=SFI
+
+          cd "${HOME}/sing-box"
+
+          make lib_install
+          export PATH="${PATH}:$(go env GOPATH)/bin"
+          go run ./cmd/internal/build_libbox -target apple -platform ios
+          mv Libbox.xcframework clients/apple
+
+          cd clients/apple
+
+          xcodebuild \
+            -project "${XCODEPROJ_NAME}.xcodeproj" \
+            -scheme "${SCHEME_NAME}" \
+            -destination 'generic/platform=iOS' \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath DerivedData \
+            build \
+            STRIP_INSTALLED_PRODUCT=NO \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=YES \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            SWIFT_SERIALIZE_DEBUGGING_OPTIONS=NO
+
+          app_path="DerivedData/Build/Products/Release-iphoneos/${APPLICATION_NAME}.app"
+          ldid -SSFI/SFI.entitlements "${app_path}/${APPLICATION_NAME}"
+          ldid -SExtension/Extension.entitlements "${app_path}/PlugIns/Extension.appex/Extension"
+          ldid -SIntentsExtension/IntentsExtension.entitlements "${app_path}/Extensions/IntentsExtension.appex/IntentsExtension"
+
+          mkdir -p packages/Payload
+          cp -rp "${app_path}" packages/Payload
+          cd packages
+          zip -qr "${APPLICATION_NAME}.tipa" Payload
+          mv "${APPLICATION_NAME}.tipa" "${GITHUB_WORKSPACE}/${APPLICATION_NAME}-${SING_VERSION}.tipa"
+          cd "${GITHUB_WORKSPACE}"
+          echo -e "SHA256 Checksum:\n$(shasum -a 256 "${APPLICATION_NAME}-${SING_VERSION}.tipa")" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Create Release and Upload TIPA
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.check.outputs.tag_name }}
+          name: ${{ needs.check.outputs.version }}
+          prerelease: ${{ needs.check.outputs.prerelease == 'true' }}
+          body: |
+            Automated iOS build for SagerNet/sing-box ${{ needs.check.outputs.tag_name }}.
+
+            Upstream release: ${{ needs.check.outputs.upstream_url }}
+          files: sing-box-${{ needs.check.outputs.version }}.tipa
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Delete Old Workflows
+        uses: Mattraks/delete-workflow-runs@main
+        with:
+          retain_days: 7
+          keep_minimum_runs: 7
