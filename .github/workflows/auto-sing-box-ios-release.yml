@@ -150,6 +150,8 @@ jobs:
               tail -n 200 "${build_log}"
               echo '```'
             } >> "${GITHUB_STEP_SUMMARY}"
+            error_excerpt="$(tail -n 80 "${build_log}" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' | awk 'BEGIN{ORS="%0A"} {print}')"
+            echo "::error title=xcodebuild failed::${error_excerpt}"
             exit 1
           fi
 
@@ -207,6 +209,44 @@ jobs:
           path: |
             ${{ runner.temp }}/xcodebuild-SFI.log
           if-no-files-found: ignore
+
+      - name: Repackage upstream iOS app as TIPA
+        if: ${{ steps.build_tipa.outcome == 'failure' }}
+        env:
+          SING_VERSION: ${{ needs.check.outputs.version }}
+          TAG_NAME: ${{ needs.check.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+
+          work_dir="${RUNNER_TEMP}/sfi-tipa"
+          rm -rf "${work_dir}"
+          mkdir -p "${work_dir}/deb" "${work_dir}/root" "${work_dir}/Payload" dist
+
+          curl -fL \
+            "https://github.com/SagerNet/sing-box/releases/download/${TAG_NAME}/SFI-${SING_VERSION}-iphoneos-arm64.deb" \
+            -o "${work_dir}/SFI.deb"
+
+          cd "${work_dir}/deb"
+          ar -x "${work_dir}/SFI.deb"
+          tar -xf data.tar.xz -C "${work_dir}/root"
+
+          app_path="${work_dir}/root/var/jb/Applications/sing-box.app"
+          if [ ! -d "${app_path}" ]; then
+            echo "Upstream iOS app bundle not found in package." >&2
+            find "${work_dir}/root" -maxdepth 5 -type d | sort >&2
+            exit 1
+          fi
+
+          cp -rp "${app_path}" "${work_dir}/Payload/"
+          cd "${work_dir}"
+          zip -qry "${GITHUB_WORKSPACE}/dist/sing-box-${SING_VERSION}.tipa" Payload
+
+          cd "${GITHUB_WORKSPACE}"
+          {
+            echo "Source TIPA build failed; repackaged upstream iOS app bundle as TIPA."
+            echo
+            echo -e "SHA256 Checksum:\n$(shasum -a 256 "dist/sing-box-${SING_VERSION}.tipa")"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Check release files
         run: |
