@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: auto-sing-box-ios-release
@@ -83,7 +84,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: ^1.25
+          go-version: ~1.25.11
 
       - name: Setup Xcode stable
         run: |-
@@ -102,7 +103,7 @@ jobs:
           cd "${HOME}"
 
           echo "sing-box-v${SING_VERSION}" >> "${GITHUB_STEP_SUMMARY}"
-          git clone -b "v${SING_VERSION}" --recurse-submodules --depth 1 https://github.com/SagerNet/sing-box.git
+          git clone -b "v${SING_VERSION}" --recurse-submodules --shallow-submodules --depth 1 https://github.com/SagerNet/sing-box.git
 
           export XCODEPROJ_NAME=sing-box
           export APPLICATION_NAME=sing-box
@@ -117,26 +118,73 @@ jobs:
 
           cd clients/apple
 
-          xcodebuild \
+          build_log="${RUNNER_TEMP}/xcodebuild-SFI.log"
+          if ! xcodebuild \
             -project "${XCODEPROJ_NAME}.xcodeproj" \
             -scheme "${SCHEME_NAME}" \
             -destination 'generic/platform=iOS' \
             -configuration Release \
             -sdk iphoneos \
             -derivedDataPath DerivedData \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
             build \
             STRIP_INSTALLED_PRODUCT=NO \
             ARCHS=arm64 \
             ONLY_ACTIVE_ARCH=YES \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
             COMPILER_INDEX_STORE_ENABLE=NO \
-            SWIFT_SERIALIZE_DEBUGGING_OPTIONS=NO
+            SWIFT_SERIALIZE_DEBUGGING_OPTIONS=NO \
+            2>&1 | tee "${build_log}"; then
+            {
+              echo "### xcodebuild failed"
+              echo
+              echo '```text'
+              tail -n 200 "${build_log}"
+              echo '```'
+            } >> "${GITHUB_STEP_SUMMARY}"
+            exit 1
+          fi
 
           app_path="DerivedData/Build/Products/Release-iphoneos/${APPLICATION_NAME}.app"
-          ldid -SSFI/SFI.entitlements "${app_path}/${APPLICATION_NAME}"
-          ldid -SExtension/Extension.entitlements "${app_path}/PlugIns/Extension.appex/Extension"
-          ldid -SIntentsExtension/IntentsExtension.entitlements "${app_path}/Extensions/IntentsExtension.appex/IntentsExtension"
+          if [ ! -d "${app_path}" ]; then
+            echo "App bundle not found: ${app_path}" >&2
+            find DerivedData/Build/Products -maxdepth 4 -type d | sort >&2
+            exit 1
+          fi
+
+          sign_bundle() {
+            local bundle_path="$1"
+            local entitlements_path="$2"
+            local executable_name
+            local executable_path
+
+            executable_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "${bundle_path}/Info.plist")"
+            executable_path="${bundle_path}/${executable_name}"
+
+            if [ ! -f "${executable_path}" ]; then
+              echo "Executable not found for ${bundle_path}: ${executable_path}" >&2
+              return 1
+            fi
+
+            echo "Signing ${executable_path} with ${entitlements_path}" >> "${GITHUB_STEP_SUMMARY}"
+            ldid -S"${entitlements_path}" "${executable_path}"
+          }
+
+          sign_bundle "${app_path}" "SFI/SFI.entitlements"
+
+          while IFS= read -r -d '' appex_path; do
+            appex_name="$(basename "${appex_path}" .appex)"
+            entitlements_path="${appex_name}/${appex_name}.entitlements"
+            if [ ! -f "${entitlements_path}" ]; then
+              echo "Entitlements not found for ${appex_name}: ${entitlements_path}" >&2
+              exit 1
+            fi
+            sign_bundle "${appex_path}" "${entitlements_path}"
+          done < <(find "${app_path}/PlugIns" "${app_path}/Extensions" -name '*.appex' -type d -print0 2>/dev/null)
 
           mkdir -p packages/Payload
           cp -rp "${app_path}" packages/Payload
