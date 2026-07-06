@@ -95,10 +95,14 @@ jobs:
         run: brew install ldid
 
       - name: Build TIPA
+        id: build_tipa
+        continue-on-error: true
         env:
           SING_VERSION: ${{ needs.check.outputs.version }}
         run: |
           set -euo pipefail
+
+          mkdir -p "${GITHUB_WORKSPACE}/dist"
 
           cd "${HOME}"
 
@@ -193,6 +197,26 @@ jobs:
           mv "${APPLICATION_NAME}.tipa" "${GITHUB_WORKSPACE}/${APPLICATION_NAME}-${SING_VERSION}.tipa"
           cd "${GITHUB_WORKSPACE}"
           echo -e "SHA256 Checksum:\n$(shasum -a 256 "${APPLICATION_NAME}-${SING_VERSION}.tipa")" >> "${GITHUB_STEP_SUMMARY}"
+          mv "${APPLICATION_NAME}-${SING_VERSION}.tipa" dist/
+
+      - name: Upload build logs
+        if: ${{ steps.build_tipa.outcome == 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-tipa-logs-${{ needs.check.outputs.version }}
+          path: |
+            ${{ runner.temp }}/xcodebuild-SFI.log
+          if-no-files-found: ignore
+
+      - name: Check release files
+        run: |
+          set -euo pipefail
+
+          find dist -maxdepth 1 -name '*.tipa' -type f -print | sort
+          if [ -z "$(find dist -maxdepth 1 -name '*.tipa' -type f -print -quit)" ]; then
+            echo "No TIPA package was produced." >&2
+            exit 1
+          fi
 
       - name: Create Release and Upload TIPA
         uses: softprops/action-gh-release@v2
@@ -204,7 +228,7 @@ jobs:
             Automated iOS build for SagerNet/sing-box ${{ needs.check.outputs.tag_name }}.
 
             Upstream release: ${{ needs.check.outputs.upstream_url }}
-          files: sing-box-${{ needs.check.outputs.version }}.tipa
+          files: dist/*.tipa
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
