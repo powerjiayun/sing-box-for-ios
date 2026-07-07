@@ -3,8 +3,9 @@ name: Auto build latest sing-box iOS release
 on:
   workflow_dispatch:
   schedule:
-    # 08:00 and 20:00 Asia/Shanghai (UTC+8)
+    # 08:00, 14:30, and 20:00 Asia/Shanghai (UTC+8)
     - cron: '0 0 * * *'
+    - cron: '27 6 * * *'
     - cron: '0 12 * * *'
 
 permissions:
