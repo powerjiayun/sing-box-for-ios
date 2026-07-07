@@ -5,9 +5,9 @@ on:
   schedule:
     # 08:00, 14:30, and 20:00 Asia/Shanghai (UTC+8)
     - cron: '0 0 * * *'
-    - cron: '30 6 * * *'
+    - cron: '0 6 * * *'
     - cron: '0 12 * * *'
-    - cron: '*/5 * * * *'
+    - cron: '*/6 * * * *'
 
 permissions:
   contents: write
